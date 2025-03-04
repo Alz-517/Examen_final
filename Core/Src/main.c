@@ -4,9 +4,18 @@
   * @file           : main.c
   * @brief          : Main program body
   ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2025 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
   */
 /* USER CODE END Header */
-
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 
@@ -20,15 +29,18 @@
 #include "locked.h"
 #include "unlocked.h"
 #include "ring_buffer.h"
+
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define FW_VERSION "0.1.1"
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -37,17 +49,27 @@
 
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef hi2c1;
+
 UART_HandleTypeDef huart2;
 UART_HandleTypeDef huart3;
 
 /* USER CODE BEGIN PV */
 uint16_t keypad_colum_pressed = 0;
 uint32_t key_pressed_tick = 0;
+uint8_t b1_press_count = 0;
 
-uint8_t pc_rx_data[3], keypad_rx_data[3], internet_rx_data[3];
-ring_buffer_t pc_rx_buffer, keypad_rx_buffer, internet_rx_buffer;
+uint8_t pc_rx_data[3];
+ring_buffer_t pc_rx_buffer;
 
-char state[3] = "Cl";
+uint8_t keypad_rx_data[3];
+ring_buffer_t keypad_rx_buffer;
+
+uint8_t internet_rx_data[3];
+ring_buffer_t internet_rx_buffer;
+
+extern char state[3];
+char state[3] = "Close";
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -56,149 +78,247 @@ static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_USART3_UART_Init(void);
 static void MX_I2C1_Init(void);
-
 /* USER CODE BEGIN PFP */
-void heartbeat(void);
-void process_command(ring_buffer_t *rb, uint8_t *buffer, char *state);
-void handle_input(UART_HandleTypeDef *huart, uint8_t *key, ring_buffer_t *buffer, char *msg);
-int system_events_handler(char *event);
-void system_state_machine(char *states);
-void OLED_Printer(ring_buffer_t *rb, uint8_t *buffer, char *state);
+
 /* USER CODE END PFP */
 
+/* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-void heartbeat(void) {
-    static uint32_t last_heartbeat = 0;
-    if (HAL_GetTick() - last_heartbeat > 1000) {
-        last_heartbeat = HAL_GetTick();
-        HAL_GPIO_TogglePin(LD1_GPIO_Port, LD1_Pin);
-    }
+int system_events_handler(char *event)
+{
+  
+}
+void system_state_machine(char *states)
+{
+
 }
 
-void handle_input(UART_HandleTypeDef *huart, uint8_t *key, ring_buffer_t *buffer, char *msg) {
-    if (HAL_UART_Receive(huart, key, 1, 10) == HAL_OK) {
-        ring_buffer_write(buffer, *key);
-        snprintf(msg, 45, "Key: %c, Buffer: %s\r\n", *key, (char *)buffer->buffer);
-        HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), 100);
-    }
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
+  if (GPIO_Pin == B1_Pin) { 
+      int press_type = detect_button_press();
+      if (press_type == 1) {
+          strcpy(state, "Close"); 
+          HAL_UART_Transmit(&huart2, (uint8_t *)"closed door\r\n", 15, 100);
+          HAL_GPIO_WritePin(DOOR_GPIO_Port, DOOR_Pin, GPIO_PIN_RESET); 
+          ssd1306_Fill(Black);
+          ssd1306_DrawBitmap(0, 0, locked, 128, 64, White);
+          ssd1306_UpdateScreen();
+      } else if (press_type == 2) {
+          strcpy(state, "Open");  
+          HAL_UART_Transmit(&huart2, (uint8_t *)"opened door\r\n", 15, 100);
+          HAL_GPIO_WritePin(DOOR_GPIO_Port, DOOR_Pin, GPIO_PIN_SET);
+          ssd1306_Fill(Black);
+          ssd1306_DrawBitmap(0, 0, unlocked, 128, 64, White);
+          ssd1306_UpdateScreen();
+      }
+  } else { 
+      keypad_colum_pressed = GPIO_Pin;
+  }
 }
 
-int system_events_handler(char *event) {
-    if (!strcmp(event, "Op")) return 2;
-    if (!strcmp(event, "To")) return 1;
-    if (!strcmp(event, "Cl")) return 0;
-    return -1;
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+  if (huart->Instance == USART2) {
+    HAL_UART_Transmit(&huart3, huart->pRxBuffPtr, huart->RxXferSize, 1000);
+    HAL_UART_Receive_IT(&huart2, huart->pRxBuffPtr, huart->RxXferSize);
+  } else if (huart->Instance == USART3) {
+    HAL_UART_Transmit(&huart2, huart->pRxBuffPtr, huart->RxXferSize, 1000);
+    HAL_UART_Receive_IT(&huart3, huart->pRxBuffPtr, huart->RxXferSize);
+  }
 }
 
-void system_state_machine(char *states) {
-    switch (system_events_handler(states)) {
-        case 0: break; // Closed
-        case 1: break; // Temporarily opened
-        case 2: break; // Permanently opened
-        default: break;
-    }
+/**
+ * @brief  Heartbeat function to blink LED2 every 1 second to indicate the system is running
+*/
+void heartbeat(void)
+{
+  static uint32_t last_heartbeat = 0;
+  if (HAL_GetTick() - last_heartbeat > 1000)
+  {
+    last_heartbeat = HAL_GetTick();
+    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+  }
+}
+
+/**
+ * @brief  Retargets the C library printf function to the USART.
+*/
+int _write(int file, char *ptr, int len)
+{
+  (void)file;
+  HAL_UART_Transmit(&huart2, (uint8_t *)ptr, len, 10);
+  return len;
+}
+
+void ssd_printer(ring_buffer_t *rb, uint8_t *buffer, char *state)
+{
+  (void)rb;
+  if (strcmp((char *)buffer, "#A#") == 0)
+  {
+    ssd1306_Fill(Black);
+    ssd1306_DrawBitmap(0, 0, unlocked, 128, 64, White);
+    ssd1306_UpdateScreen();
+  }
+
+ else if (strcmp((char *)buffer, "#C#") == 0)
+ {
+  
+  ssd1306_Fill(Black);
+  ssd1306_DrawBitmap(0, 0, locked, 128, 64, White);
+  ssd1306_UpdateScreen();
+  
+ }
 }
 
 void process_command(ring_buffer_t *rb, uint8_t *buffer, char *state) {
-  if (ring_buffer_size(rb) == 3) {
-      for (int i = 0; i < 3; i++) ring_buffer_read(rb, &buffer[i]);
-      buffer[3] = '\0';
-
-      if (!strcmp((char *)buffer, "#O#")) {
-          if (!strcmp(state, "Op")) {
-              HAL_UART_Transmit(&huart2, (uint8_t *)"Puerta ya esta abierta\r\n", 26, 100);
-              HAL_UART_Transmit(&huart3, (uint8_t *)"STATUS:OPEN\r\n", 14, 100); // Notificar al ESP01
-          } else {
-              HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
-              strcpy(state, "Op");
-              HAL_UART_Transmit(&huart2, (uint8_t *)"Puerta Abierta\r\n", 17, 100);
-              HAL_UART_Transmit(&huart3, (uint8_t *)"DOOR:OPENED\r\n", 14, 100);
-          }
-      } else if (!strcmp((char *)buffer, "#C#")) {
-          if (!strcmp(state, "Cl")) {
-              HAL_UART_Transmit(&huart2, (uint8_t *)"Puerta ya esta cerrada\r\n", 27, 100);
-              HAL_UART_Transmit(&huart3, (uint8_t *)"STATUS:CLOSED\r\n", 15, 100);
-          } else {
-              HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
-              strcpy(state, "Cl");
-              HAL_UART_Transmit(&huart2, (uint8_t *)"Puerta Cerrada\r\n", 17, 100);
-              HAL_UART_Transmit(&huart3, (uint8_t *)"DOOR:CLOSED\r\n", 14, 100);
-          }
-      } else {
-          HAL_UART_Transmit(&huart2, (uint8_t *)"Comando no reconocido\r\n", 24, 100);
+  if (ring_buffer_size(rb) == 3) {  
+      for (int i = 0; i < 3; i++) {
+          ring_buffer_read(rb, &buffer[i]);
       }
-      memset(buffer, '_', 3);
+      buffer[3] = '\0';  
+
+      if (strcmp((char *)buffer, "#A#") == 0) {
+          if (strcmp(state, "Open") == 0) {
+              HAL_UART_Transmit(&huart2, (uint8_t *)"Already opened\r\n", 18, 100);
+              ssd_printer(rb, buffer, state);
+          } else {
+              HAL_GPIO_TogglePin(DOOR_GPIO_Port, DOOR_Pin);  
+              HAL_UART_Transmit(&huart2, (uint8_t *)"opened door\r\n", 15, 100);
+              ssd_printer(rb, buffer, state);
+              strcpy(state, "Open");
+          }
+
+      } 
+
+      else if (strcmp((char *)buffer, "#C#") == 0) {
+          if (strcmp(state, "Close") == 0) {
+              HAL_UART_Transmit(&huart2, (uint8_t *)"Already closed\r\n", 17, 100);
+              ssd_printer(rb, buffer, state);
+          } else {
+              HAL_GPIO_TogglePin(DOOR_GPIO_Port, DOOR_Pin);  
+              HAL_UART_Transmit(&huart2, (uint8_t *)"closed door\r\n", 15, 100);
+              ssd_printer(rb, buffer, state);
+              strcpy(state, "Close");
+          }
+      }  
+      else {
+          HAL_UART_Transmit(&huart2, (uint8_t *)"invalid command\r\n", 18, 100);
+          if (strcmp(state, "Close") == 0) {
+              ssd1306_Fill(Black);
+              ssd1306_DrawBitmap(0, 0, locked, 128, 64, White);
+              ssd1306_UpdateScreen();
+          } else {
+              ssd1306_Fill(Black);
+              ssd1306_DrawBitmap(0, 0, unlocked, 128, 64, White);
+              ssd1306_UpdateScreen();
+          }
+      }
+
+      for (int i = 0; i < 3; i++) {
+          buffer[i] = '_';
+      }
   }
 }
-
-
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
-  if (huart->Instance == USART2) {
-      ring_buffer_write(&pc_rx_buffer, pc_rx_data[0]);
-      HAL_UART_Receive_IT(&huart2, pc_rx_data, 1);
-  } else if (huart->Instance == USART3) {
-      ring_buffer_write(&internet_rx_buffer, internet_rx_data[0]);
-      HAL_UART_Receive_IT(&huart3, internet_rx_data, 1);
-  }
-}
-
-int _write(int file, char *ptr, int len) {
-    (void)file;
-    HAL_UART_Transmit(&huart2, (uint8_t *)ptr, len, 10);
-    return len;
-}
-
 /* USER CODE END 0 */
 
-int main(void) {
-    HAL_Init();
-    SystemClock_Config();
-    MX_GPIO_Init();
-    MX_USART2_UART_Init();
-    MX_USART3_UART_Init();
-    MX_I2C1_Init();
+/**
+  * @brief  The application entry point.
+  * @retval int
+  */
+int main(void)
+{
 
-    ring_buffer_init(&pc_rx_buffer, pc_rx_data, sizeof(pc_rx_data));
-    ring_buffer_init(&keypad_rx_buffer, keypad_rx_data, sizeof(keypad_rx_data));
-    ring_buffer_init(&internet_rx_buffer, internet_rx_data, sizeof(internet_rx_data));
+  /* USER CODE BEGIN 1 */
 
-    setvbuf(stdout, NULL, _IONBF, 0);
-    keypad_init();
-    HAL_UART_Transmit(&huart2, (uint8_t *)"Hello World\r\n", 13, 100);
-    ssd1306_Init();
-    ssd1306_Fill(Black);
-    ssd1306_DrawBitmap(0, 0, locked, 128, 64, White);
-    ssd1306_UpdateScreen();
+  /* USER CODE END 1 */
 
-    uint8_t internet_key, pc_key, key;
-    char msg[45];
+  /* MCU Configuration--------------------------------------------------------*/
 
-    memset(keypad_rx_data, '_', sizeof(keypad_rx_data));
-    memset(pc_rx_data, '_', sizeof(pc_rx_data));
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+  HAL_Init();
 
-    HAL_UART_Receive_IT(&huart2, pc_rx_data, 1);
-    HAL_UART_Receive_IT(&huart3, internet_rx_data, 1);
+  /* USER CODE BEGIN Init */
 
+  /* USER CODE END Init */
 
-    while (1) {
-        heartbeat();
+  /* Configure the system clock */
+  SystemClock_Config();
 
-        if (keypad_colum_pressed != 0 && (key_pressed_tick + 5) < HAL_GetTick()) {
-            key = keypad_scan(keypad_colum_pressed);
-            keypad_colum_pressed = 0;
-            if (key != 'E') ring_buffer_write(&keypad_rx_buffer, key);
-        }
+  /* USER CODE BEGIN SysInit */
 
-        handle_input(&huart2, &pc_key, &pc_rx_buffer, msg);
-        handle_input(&huart3, &internet_key, &internet_rx_buffer, msg);
+  /* USER CODE END SysInit */
 
-        process_command(&keypad_rx_buffer, keypad_rx_data, state);
-        process_command(&pc_rx_buffer, pc_rx_data, state);
+  /* Initialize all configured peripherals */
+  MX_GPIO_Init();
+  MX_USART2_UART_Init();
+  MX_USART3_UART_Init();
+  MX_I2C1_Init();
+  /* USER CODE BEGIN 2 */
+  //HAL_UART_Receive_IT(&huart2, pc_rx_data, sizeof(pc_rx_data));
+  //HAL_UART_Receive_IT(&huart3, keypad_rx_data, sizeof(keypad_rx_data));
+  
+  ring_buffer_init(&pc_rx_buffer, pc_rx_data, sizeof(pc_rx_data));
+  ring_buffer_init(&keypad_rx_buffer, keypad_rx_data, sizeof(keypad_rx_data));
+  ring_buffer_init(&internet_rx_buffer, internet_rx_data, sizeof(internet_rx_data));
+  setvbuf(stdout, NULL, _IONBF, 0);  
 
-        system_state_machine(state);
-        HAL_Delay(100);
+  keypad_init();
+  HAL_GPIO_WritePin(DOOR_GPIO_Port, DOOR_Pin, GPIO_PIN_RESET);
+  ssd1306_Init();
+  ssd1306_Fill(Black);
+  ssd1306_DrawBitmap(0, 0, locked, 128, 64, White);
+  ssd1306_UpdateScreen();
+  uint8_t internet_key;
+  uint8_t pc_key;
+  uint8_t key;
+
+  for (size_t i = 0; i < sizeof(keypad_rx_data); i++) {
+    keypad_rx_data[i] = '_';
+    pc_rx_data[i] = '_';
+  } 
+  /* USER CODE END 2 */
+
+  /* Infinite loop */
+  /* USER CODE BEGIN WHILE */
+  while (1) {
+    heartbeat();
+    if (keypad_colum_pressed != 0 && (key_pressed_tick + 5) < HAL_GetTick()) {
+      key = keypad_scan(keypad_colum_pressed);
+      keypad_colum_pressed = 0;
+      if (key != 'E') {
+        ring_buffer_write(&keypad_rx_buffer, key);
+        uint8_t size = ring_buffer_size(&keypad_rx_buffer);
+        char msg[45];
+        snprintf(msg, sizeof(msg), "Key: %c, Buffer: %s, Size: %d\r\n", key, keypad_rx_data, size);
+        HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), 100);
+      }
+      
     }
+    if (HAL_UART_Receive(&huart2, &pc_key, 1, 10) == HAL_OK) {
+      ring_buffer_write(&pc_rx_buffer, pc_key);
+      uint8_t size = ring_buffer_size(&pc_rx_buffer);
+      char msg[45];
+      snprintf(msg, sizeof(msg), "PC Key: %c, Buffer: %s, Size: %d\r\n", pc_key, pc_rx_data, size);
+      HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), 100);
+    }
+    if (HAL_UART_Receive(&huart3, &internet_key, 1, 10) == HAL_OK) {
+      ring_buffer_write(&internet_rx_buffer, internet_key);
+      uint8_t size = ring_buffer_size(&internet_rx_buffer);
+      char msg[45];
+      snprintf(msg, sizeof(msg), "PC Key: %c, Buffer: %s, Size: %d\r\n", internet_key, internet_rx_data, size);
+      HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), 100);
+    }
+    process_command(&keypad_rx_buffer, keypad_rx_data, state);
+    process_command(&pc_rx_buffer, pc_rx_data, state);
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
+    system_state_machine(state);
+    HAL_Delay(100);
+  }
+  /* USER CODE END 3 */
 }
 
 /** 
