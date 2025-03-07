@@ -97,20 +97,38 @@ void system_state_machine(char *states)
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
   if (GPIO_Pin == B1_Pin) { 
       int press_type = detect_button_press();
-      if (press_type == 1) {
+      if (press_type == 2) {
+        strcpy(state, "Open"); 
+        HAL_UART_Transmit(&huart2, (uint8_t *)"Temporaly open\r\n", 15, 100);
+        HAL_GPIO_WritePin(DOOR_GPIO_Port, DOOR_Pin, GPIO_PIN_SET); 
+        ssd1306_Fill(Black);
+        ssd1306_DrawBitmap(0, 0, unlocked, 128, 64, White);
+        ssd1306_UpdateScreen();
+        HAL_Delay(5000);
+        strcpy(state, "Close"); 
+        HAL_UART_Transmit(&huart2, (uint8_t *)"close door\r\n", 15, 100);
+        HAL_GPIO_WritePin(DOOR_GPIO_Port, DOOR_Pin, GPIO_PIN_RESET); 
+        ssd1306_Fill(Black);
+        ssd1306_DrawBitmap(0, 0, locked, 128, 64, White);
+        ssd1306_UpdateScreen();
+      }
+      else if (press_type == 1) {
+        if (strcmp(state, "Open") == 0){
           strcpy(state, "Close"); 
-          HAL_UART_Transmit(&huart2, (uint8_t *)"closed door\r\n", 15, 100);
+          HAL_UART_Transmit(&huart2, (uint8_t *)"close door\r\n", 15, 100);
           HAL_GPIO_WritePin(DOOR_GPIO_Port, DOOR_Pin, GPIO_PIN_RESET); 
           ssd1306_Fill(Black);
           ssd1306_DrawBitmap(0, 0, locked, 128, 64, White);
           ssd1306_UpdateScreen();
-      } else if (press_type == 2) {
+        }
+        else {
           strcpy(state, "Open");  
           HAL_UART_Transmit(&huart2, (uint8_t *)"opened door\r\n", 15, 100);
           HAL_GPIO_WritePin(DOOR_GPIO_Port, DOOR_Pin, GPIO_PIN_SET);
           ssd1306_Fill(Black);
           ssd1306_DrawBitmap(0, 0, unlocked, 128, 64, White);
           ssd1306_UpdateScreen();
+        }
       }
   } else { 
       keypad_colum_pressed = GPIO_Pin;
@@ -312,6 +330,7 @@ int main(void)
     }
     process_command(&keypad_rx_buffer, keypad_rx_data, state);
     process_command(&pc_rx_buffer, pc_rx_data, state);
+    process_command(&internet_rx_buffer, internet_rx_data, state);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
